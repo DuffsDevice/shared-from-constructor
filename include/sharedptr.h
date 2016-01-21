@@ -26,13 +26,17 @@
 #include <type_traits>
 #include <utility>
 #include <functional>
+#include <cstdint>
 
 namespace detail
 {
 	struct reference_count
 	{
-		int shared_count;
-		int pointer_count;
+		typedef uint16_t	size_type; 
+		typedef int16_t		difference_type;
+		
+		difference_type	shared_count;
+		size_type		pointer_count;
 		
 		reference_count() :
 			shared_count( 1 )
@@ -47,29 +51,29 @@ namespace detail
 			shared_count += shared_count > 0 ? 1 : -1;
 		}
 		// Call only, when the pointer shall not be deleted by the shared_ptr
-		void release_shared( reference_count** pointerToMe ){
+		void release_shared( reference_count*& pointerToMe ){
 			shared_count--;
-			*pointerToMe = nullptr;
+			pointerToMe = nullptr;
 			if( !--pointer_count )
 				delete this;
 		}
 		template<typename T>
-		void release_shared( reference_count** pointerToMe , T** value )
+		void release_shared( reference_count*& pointerToMe , T*& value )
 		{
-			*pointerToMe = nullptr;
+			pointerToMe = nullptr;
 			if( shared_count < 0 )
 				shared_count++;
 			else if( !--shared_count )
 			{
 				// Indicate, the destructor was called
-				shared_count = -1; 
+				shared_count = -1;
 				
 				// Delete data
-				delete *value;
+				delete value;
 				
 				// Set Value to zero, in case the destructor stored
 				// the pointer inside an outside, that is persisting sharedPtr
-				*value = nullptr;
+				value = nullptr;
 				
 				// Inform all weak ptrs, this reference_count is
 				// not used by any sharedPtr's anymore
@@ -79,8 +83,8 @@ namespace detail
 					delete this;
 			}
 		}
-		void release_weak( reference_count** pointerToMe ){
-			*pointerToMe = nullptr;
+		void release_weak( reference_count*& pointerToMe ){
+			pointerToMe = nullptr;
 			if( !--pointer_count )
 				delete this;
 		}
@@ -188,8 +192,8 @@ class shared_ptr
 		//! Copy Assign
 		shared_ptr& operator=( const shared_ptr& other ){
 			reset();
-			rc = other.rc;
 			ptr = other.ptr;
+			rc = other.rc;
 			if( rc )
 				rc->add_shared();
 			return *this;
@@ -197,15 +201,16 @@ class shared_ptr
 		template<typename T1, typename = typename std::enable_if<std::is_convertible<T1*,T*>::value>::type>
 		shared_ptr& operator=( const shared_ptr<T1>& other ){
 			reset();
-			rc = other.rc;
 			ptr = other.ptr;
+			rc = other.rc;
 			if( rc )
 				rc->add_shared();
 			return *this;
 		}
 		
 		//! Pointer Assign
-		shared_ptr& operator=( T*&& ptr ){
+		template<typename T1>
+		shared_ptr& operator=( T1*&& ptr ){
 			return *this = shared_ptr( std::move(ptr) );
 		}
 		
@@ -216,20 +221,21 @@ class shared_ptr
 		}
 		
 		//! Reset contained data
-		void reset( T*&& ptr ){
-			if( rc )
-				rc->release_shared( &rc , &ptr );
+		template<typename T1>
+		void reset( T1*&& ptr ){
+			reset();
+			*this = shared_ptr( std::move(ptr) );
 		}
 		void reset( std::nullptr_t = nullptr ){
 			if( rc )
-				rc->release_shared( &rc , &ptr );
+				rc->release_shared( rc , ptr );
 		}
 		
 		//! Get Contained Pointer
-		T* get() const { return rc ? ptr : nullptr; }
+		T* get() const { return ptr; }
 		
 		//! Dereference Operators
-		T* operator->() const { return rc ? ptr : nullptr; }
+		T* operator->() const { return ptr; }
 		T& operator*() const { return *ptr; }
 		
 		//! Get number of users on the ptr
@@ -254,12 +260,12 @@ class shared_ptr
 		bool owner_equal( const weak_ptr<T1>& other ) const ;
 		
 		//! Check if the contained pointer is not null
-		explicit operator bool() const { return rc && ptr; }
+		explicit operator bool() const { return ptr; }
 		
 		//! Check if the contained pointer is only
 		//! being managed by this sharedPtr instance
 		bool unique(){
-			return rc && !rc->shared_count;
+			return rc && rc->shared_count == 1;
 		}
 		
 		//! Swap Function
@@ -272,7 +278,7 @@ class shared_ptr
 		T* release(){
 			if( !rc || rc->shared_count != 1 )
 				return nullptr;
-			rc->release_shared( &rc );
+			rc->release_shared( rc );
 			T* tmp = ptr;
 			ptr = nullptr;
 			return tmp;
@@ -288,7 +294,7 @@ class shared_ptr
 		detail::reference_count*	rc;
 		T*							ptr;
 		
-		// Ctor from Reference Count Object
+		// Ctor from Reference count object & pointer
 		shared_ptr( detail::reference_count* rc , T* ptr ) :
 			rc( rc )
 			, ptr( ptr )
@@ -487,7 +493,7 @@ class weak_ptr
 		//! Reset contained data
 		void reset( std::nullptr_t = nullptr ){
 			if( rc )
-				rc->release_weak( &rc );
+				rc->release_weak( rc );
 		}
 		
 		//! Swap Function
@@ -668,12 +674,5 @@ struct owner_less<shared_ptr<T>> : public generic_owner_less<shared_ptr<T>,weak_
 template<typename T>
 struct owner_less<weak_ptr<T>> : public generic_owner_less<weak_ptr<T>,shared_ptr<T>>
 {};
-
-namespace std{
-	template < class Key, class T, class Compare , class Alloc> class map;
-}
-
-template<typename K, typename T, typename A = std::allocator<std::pair<const weak_ptr<K>,T>>>
-using _weakMap = std::map<weak_ptr<K>, T, owner_less<weak_ptr<K>>, A>;
 
 #endif
